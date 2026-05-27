@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	results := runChecks(ctx, allChecks, timeout, verbose)
+	results = postProcessResults(results)
 
 	return report.Render(results, output, os.Stdout)
 }
@@ -90,5 +92,35 @@ func runChecks(ctx context.Context, checkers []checker.Checker, timeout time.Dur
 	}
 
 	wg.Wait()
+	return results
+}
+
+// postProcessResults applies cross-check correlation logic.
+// When the gateway (port 443 + HTTPS) is confirmed working, ICA port failures
+// are expected because traffic is tunneled through the gateway.
+func postProcessResults(results []*checker.Result) []*checker.Result {
+	gatewayWorks := false
+	httpsWorks := false
+
+	for _, r := range results {
+		if r.Name == "TCP Port 443" && r.Status == checker.StatusPass {
+			gatewayWorks = true
+		}
+		if r.Name == "HTTPS Endpoint" && r.Status == checker.StatusPass {
+			httpsWorks = true
+		}
+	}
+
+	if gatewayWorks && httpsWorks {
+		for _, r := range results {
+			if r.Status == checker.StatusFail && strings.HasPrefix(r.Name, "TCP Port") && r.Name != "TCP Port 443" {
+				r.Status = checker.StatusPass
+				r.Severity = checker.SeverityInfo
+				r.Message = fmt.Sprintf("%s (expected - ICA traffic is tunneled through the gateway)", r.Message)
+				r.Error = nil
+			}
+		}
+	}
+
 	return results
 }

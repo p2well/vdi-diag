@@ -74,7 +74,8 @@ func (c *TCPChecker) Severity() checker.Severity {
 	if c.port == 443 {
 		return checker.SeverityCritical
 	}
-	return checker.SeverityCritical
+	// ICA ports (1494/2598) are tunneled through the gateway when HTTPS works.
+	return checker.SeverityWarning
 }
 
 func (c *TCPChecker) Run(ctx context.Context) *checker.Result {

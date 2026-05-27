@@ -44,7 +44,11 @@ func (c *ProxyChecker) Run(ctx context.Context) *checker.Result {
 	}
 
 	outputStr := string(output)
-	if strings.Contains(outputStr, "Direct access") {
+	outputLower := strings.ToLower(outputStr)
+	if strings.Contains(outputLower, "directaccess") ||
+		strings.Contains(outputLower, "direct access") ||
+		strings.Contains(outputLower, "kein proxy") ||
+		strings.Contains(outputLower, "no proxy") {
 		r.Status = checker.StatusPass
 		r.Message = "No proxy configured (direct access)"
 		return r
@@ -143,12 +147,23 @@ func (c *MTUChecker) Run(ctx context.Context) *checker.Result {
 	r.Duration = time.Since(start)
 
 	output := stdout.String() + stderr.String()
+	outputLower := strings.ToLower(output)
 
-	if err != nil || strings.Contains(output, "fragmented") || strings.Contains(output, "Packet needs to be fragmented") {
+	// Detect fragmentation in any locale (English: "fragmented", German: "fragmentiert").
+	hasFragmentation := strings.Contains(outputLower, "fragment")
+
+	if err != nil || hasFragmentation {
 		// Try smaller size to find working MTU.
 		cmd2 := exec.CommandContext(ctx, "ping", "-n", "1", "-f", "-l", "1400", c.host)
-		output2, _ := cmd2.Output()
-		if strings.Contains(string(output2), "TTL") || strings.Contains(string(output2), "Reply") {
+		output2, err2 := cmd2.Output()
+		output2Lower := strings.ToLower(string(output2))
+
+		// Check for a successful reply in any locale.
+		pingSuccess := strings.Contains(output2Lower, "ttl") ||
+			strings.Contains(output2Lower, "reply") ||
+			strings.Contains(output2Lower, "antwort")
+
+		if pingSuccess {
 			r.Status = checker.StatusPass
 			r.Severity = checker.SeverityWarning
 			r.Message = "MTU is below 1500 (works at 1400)"
@@ -156,9 +171,33 @@ func (c *MTUChecker) Run(ctx context.Context) *checker.Result {
 			return r
 		}
 
-		r.Status = checker.StatusFail
-		r.Message = "MTU/fragmentation issues detected"
-		r.Details = output
+		// Second ping also failed. Check if it's also fragmentation or ICMP blocked.
+		output2HasFrag := strings.Contains(output2Lower, "fragment")
+		if output2HasFrag {
+			// Both sizes fragment — MTU is very low.
+			r.Status = checker.StatusFail
+			r.Severity = checker.SeverityWarning
+			r.Message = "MTU is below 1428"
+			r.Details = "Path MTU is below 1428 bytes. Consider lowering the ICA session MTU."
+			return r
+		}
+
+		// ICMP appears blocked by the destination — cannot determine MTU.
+		if err2 != nil && !hasFragmentation {
+			r.Status = checker.StatusPass
+			r.Severity = checker.SeverityInfo
+			r.Message = "MTU check inconclusive (ICMP blocked)"
+			r.Details = "The destination does not respond to ICMP ping. MTU cannot be verified."
+			return r
+		}
+
+		// Fragmentation at 1472 but ICMP blocked at 1400 — real MTU issue
+		// but not critical since TCP/HTTPS handles segmentation.
+		r.Status = checker.StatusPass
+		r.Severity = checker.SeverityWarning
+		r.Message = "Path MTU likely below 1500 (ICMP blocked at destination)"
+		r.Details = "Fragmentation detected at 1472 bytes but destination does not respond to ICMP. " +
+			"TCP-based VDI sessions handle segmentation automatically via the gateway."
 		return r
 	}
 
