@@ -116,7 +116,7 @@ func postProcessResults(results []*checker.Result) []*checker.Result {
 			if r.Status == checker.StatusFail && strings.HasPrefix(r.Name, "TCP Port") && r.Name != "TCP Port 443" {
 				r.Status = checker.StatusPass
 				r.Severity = checker.SeverityInfo
-				r.Message = fmt.Sprintf("%s (expected - ICA traffic is tunneled through the gateway)", r.Message)
+					r.Message = "Not directly reachable (expected — ICA traffic is tunneled through the gateway)"
 				r.Error = nil
 			}
 		}
